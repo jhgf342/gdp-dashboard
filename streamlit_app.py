@@ -1,151 +1,131 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import time
+import requests
+import json
+from datetime import datetime, timedelta
+import speech_recognition as sr
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Function to fetch news from Google News
+def fetch_news(api_key, query, num_articles):
+    url = f"https://newsapi.org/v2/everything?q={query}&language=en&sortBy=relevancy&pageSize={num_articles}&from={(datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')}&to={datetime.now().strftime('%Y-%m-%d')}"
+    headers = {
+        'Authorization': f'Bearer {api_key}'
+    }
+    response = requests.get(url, headers=headers)
+    
+    articles = response.json().get('articles', [])
+    relevant_articles = [article for article in articles[:num_articles] if query.lower() in article['title'].lower() or query.lower() in article['description'].lower()]
+    return relevant_articles
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Function to recognize speech using the microphone
+def recognize_speech():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.write("Please speak the news topic...")
+        audio = recognizer.listen(source)
+        try:
+            topic = recognizer.recognize_google(audio)
+            st.write(f"You said: {topic}")
+            return topic
+        except sr.UnknownValueError:
+            st.error("Sorry, I could not understand your speech.")
+        except sr.RequestError:
+            st.error("Could not request results; check your network connection.")
+        return None
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Streamlit app
+def main():
+    st.set_page_config(page_title="InfoLive - AI News Anchor", layout="wide")
+    
+    # Custom CSS for styling
+    st.markdown("""
+        <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: white;
+            color: black;
+            margin-left: 30px;
+            font-size: 1em;
+        }
+        header {
+            font-family: 'Times New Roman', cursive;
+            font-size: 5em;
+            padding: 10px 20px;
+            height: 120px;
+            text-align: left;
+            background-color: rgba(255, 165, 56, 1);
+            color: orangered;
+            position: sticky;
+            top: 0;
+            width: 100%;
+        }
+        p{
+                font-size: 1.5em;
+        }
+        h1 {
+            font-family: 'Bebas Neue', cursive;
+            font-size: 3em;
+            color: orangered;
+        }
+        .container {
+            width: 60%;
+            margin: auto;
+            padding: 10px;
+        }
+        .news-article {
+            margin-bottom: 30px;
+        }
+        footer {
+            background-color: rgba(255, 165, 56, 0.8);
+            color: orangered;
+            padding: 10px 20px;
+            text-align: center;
+            position: fixed;
+            bottom: 0;
+            width: 100%;}
+        hr{
+                height: 20px;
+                background-color: rgb(255, 165, 56)
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<header>AI News Anchor - InfoLive</header>', unsafe_allow_html=True)
+    st.title("InfoLive - AI News Anchor")
+    st.markdown("<p>Meet 'InfoLive', your digital news companion! With lightning-fast updates and insightful analysis, InfoLive delivers the latest headlines straight to your screen. Stay informed, stay connected, and navigate the complexities of the modern world with ease, thanks to InfoLive's unparalleled news delivery capabilities!</p>", unsafe_allow_html=True)
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+    st.sidebar.header("Demonstration")
+    api_key_news = 'ad00a306c6a4404a9fe801b405df2c5d'
+    num_articles = st.sidebar.slider("Number of Articles", 0, 4, 4)
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    if st.sidebar.button("Get News"):
+        topic = recognize_speech()
+        if api_key_news and topic:
+            news_articles = fetch_news(api_key_news, topic, num_articles)
+            if news_articles:
+                script = " ".join([f"{article['title']}. {article['description']}" for article in news_articles])
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+                st.header("Latest News")
+                for i, article in enumerate(news_articles):
+                    st.markdown(f"""
+                        <div class="news-article">
+                            <h2>{i+1}. {article['title']}</h2>
+                            <p>{article['description']}</p>
+                            <a href="{article['url']}" target="_blank">Read more</a>
+                        </div>
+                    """, unsafe_allow_html=True)
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+                # Sample video display
+                st.header("Generated News Video")
+                if "sports" in topic.lower():
+                    st.video('1720835456951.mp4')
+                elif "tech" in topic.lower() or "technology" in topic.lower():
+                    st.video('1720835881769.mp4')
+                elif "politics" in topic.lower():
+                    st.video("1720835980469.mp4")
+            else:
+                st.error("No relevant articles found.")
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            st.error("Please provide all required inputs.")
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+
